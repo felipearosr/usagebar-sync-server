@@ -55,9 +55,16 @@ it("creates a group, pushes a blob, and reads it back over HTTP", async () => {
 });
 
 it("rejects an oversized body over real HTTP", async () => {
-  const res = await fetch(`${server.url}/v1/groups/${"A".repeat(22)}/machines/${"B".repeat(22)}/blobs/profile`, {
+  const authKey = randomBytes(32);
+  const groupId = randomBytes(16).toString("base64url");
+  await fetch(`${server.url}/v1/groups`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ groupId, authKeyHash: createHash("sha256").update(authKey).digest("base64url") }),
+  });
+  const res = await fetch(`${server.url}/v1/groups/${groupId}/machines/${"B".repeat(22)}/blobs/profile`, {
     method: "PUT",
-    headers: { authorization: `Bearer ${"C".repeat(43)}` },
+    headers: { authorization: `Bearer ${authKey.toString("base64url")}` },
     body: new Uint8Array(65537),
   });
   expect(res.status).toBe(413);

@@ -111,7 +111,9 @@ export class SqliteStore {
 
   getGroup(groupId: string): Group | undefined {
     const row = this.db
-      .prepare("SELECT group_id, auth_key_hash, max_machines, retention_days, expires_at FROM groups WHERE group_id = ?")
+      .prepare(
+        "SELECT group_id, auth_key_hash, max_machines, retention_days, expires_at FROM groups WHERE group_id = ?",
+      )
       .get(groupId) as GroupRow | undefined;
     if (!row) return undefined;
     return {

@@ -7,13 +7,14 @@ set -euo pipefail
 BASE="${1:-http://127.0.0.1:8787}/v1"
 b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 
-auth_key_hex=$(openssl rand -hex 32)
-auth_key=$(printf '%s' "$auth_key_hex" | xxd -r -p | b64url)
-auth_key_hash=$(printf '%s' "$auth_key_hex" | xxd -r -p | openssl dgst -sha256 -binary | b64url)
-group_id=$(openssl rand 16 | b64url)
-machine_id=$(openssl rand 16 | b64url)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+
+openssl rand 32 > "$tmp/auth-key"
+auth_key=$(b64url < "$tmp/auth-key")
+auth_key_hash=$(openssl dgst -sha256 -binary < "$tmp/auth-key" | b64url)
+group_id=$(openssl rand 16 | b64url)
+machine_id=$(openssl rand 16 | b64url)
 
 echo "== GET /info"
 curl -fsS "$BASE/info"; echo

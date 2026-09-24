@@ -21,8 +21,6 @@ export type AppDeps = {
 /** The reserved Machine ID for blobs that belong to the Sync Group (protocol §4, §5.3). */
 const GROUP_MACHINE_ID = "group";
 
-const ID_PATTERN = /^[A-Za-z0-9_-]{22}$/; // 16 bytes, base64url, no padding
-const KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/; // 32 bytes, base64url, no padding
 const BLOB_NAME_PATTERN = /^(profile|retired|day-\d{4}-\d{2}-\d{2})$/;
 
 const DEFAULT_CHANGES_LIMIT = 100;
@@ -48,38 +46,61 @@ function decodeCursor(cursor: string): number | undefined {
   return match ? Number(match[1]) : undefined;
 }
 
-/** Base64url that decodes to exactly `length` bytes and round-trips, so no two strings name the same bytes. */
-function decodeKey(value: string, length: number): Uint8Array | undefined {
-  if (!KEY_PATTERN.test(value)) return undefined;
+/**
+ * Unpadded base64url that decodes to exactly `byteLength` bytes and round-trips, so no two strings name the same
+ * bytes. Group and Machine IDs are 16 bytes; auth keys and their hashes are 32.
+ */
+function decodeBase64url(value: string, byteLength: number): Uint8Array | undefined {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) return undefined;
   const bytes = Buffer.from(value, "base64url");
-  return bytes.length === length && bytes.toString("base64url") === value ? bytes : undefined;
+  return bytes.length === byteLength && bytes.toString("base64url") === value ? bytes : undefined;
 }
 
-function isValidId(value: string) {
-  return ID_PATTERN.test(value) && Buffer.from(value, "base64url").toString("base64url") === value;
+const isValidId = (value: string) => decodeBase64url(value, 16) !== undefined;
+
+const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && timingSafeEqual(a, b);
+
+type BlobAddress = { machineId: string; name: string; isGroupBlob: boolean };
+
+/** Validates the Machine ID and blob name in the route (protocol §4, §5.3, §6.4). */
+function blobAddress(c: Context): BlobAddress | Response {
+  const machineId = c.req.param("machineId") ?? "";
+  const name = c.req.param("name") ?? "";
+  const isGroupBlob = machineId === GROUP_MACHINE_ID;
+  if (!isGroupBlob && !isValidId(machineId)) {
+    return error(c, 422, "invalid_machine_id", 'machineId must be 16 bytes of base64url or "group".');
+  }
+  // `retired` is the only group blob, and it only lives under `group`.
+  if (!BLOB_NAME_PATTERN.test(name) || isGroupBlob !== (name === "retired")) {
+    return error(c, 422, "invalid_name", `"${name}" is not a valid blob name here.`);
+  }
+  return { machineId, name, isGroupBlob };
 }
+
+type Env = { Variables: { group: Group } };
 
 export function createApp({ store, config, clock = () => new Date() }: AppDeps) {
-  const app = new Hono();
+  const app = new Hono<Env>();
 
   /**
-   * Resolves the group only when the bearer credential matches. Every failure looks the same to the caller
-   * (protocol §6.1), and the hash comparison runs whether or not the group exists.
+   * Every group-scoped route runs behind this, before any body is read. It resolves the group only when the bearer
+   * credential matches. Every failure looks the same to the caller (protocol §6.1), and the hash comparison runs
+   * whether or not the group exists.
    */
-  function authenticate(c: Context): Group | undefined {
-    const groupId = c.req.param("groupId") ?? "";
-    const header = c.req.header("authorization") ?? "";
-    const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length).trim() : "";
-    const authKey = decodeKey(token, 32);
+  app.use("/v1/groups/:groupId/*", async (c, next) => {
+    const groupId = c.req.param("groupId");
+    const [scheme = "", token = ""] = (c.req.header("authorization") ?? "").trim().split(/\s+/);
+    const authKey = scheme.toLowerCase() === "bearer" ? decodeBase64url(token, 32) : undefined;
     const group = isValidId(groupId) ? store.getGroup(groupId) : undefined;
 
     const presented = createHash("sha256")
       .update(authKey ?? new Uint8Array())
       .digest();
-    const expected = group?.authKeyHash ?? DUMMY_HASH;
-    const matches = expected.length === presented.length && timingSafeEqual(presented, expected);
-    return group && authKey && matches ? group : undefined;
-  }
+    const matches = sameBytes(presented, group?.authKeyHash ?? DUMMY_HASH);
+    if (!group || !authKey || !matches) return groupNotFound(c);
+    c.set("group", group);
+    await next();
+  });
 
   app.get("/v1/info", (c) =>
     c.json({
@@ -102,7 +123,7 @@ export function createApp({ store, config, clock = () => new Date() }: AppDeps) 
     if (typeof groupId !== "string" || !isValidId(groupId)) {
       return invalidRequest(c, "groupId must be 16 bytes of base64url.");
     }
-    const hash = typeof authKeyHash === "string" ? decodeKey(authKeyHash, 32) : undefined;
+    const hash = typeof authKeyHash === "string" ? decodeBase64url(authKeyHash, 32) : undefined;
     if (!hash) return invalidRequest(c, "authKeyHash must be a base64url SHA-256 digest.");
 
     const { created, group } = store.createGroup(
@@ -114,7 +135,7 @@ export function createApp({ store, config, clock = () => new Date() }: AppDeps) 
       timestamp(clock()),
     );
     if (created) return c.json({ limits: group.limits }, 201);
-    if (timingSafeEqual(group.authKeyHash, hash)) return c.json({ limits: group.limits }, 200);
+    if (sameBytes(group.authKeyHash, hash)) return c.json({ limits: group.limits }, 200);
     return error(c, 409, "group_exists", "A group with this ID already exists.");
   });
 
@@ -127,18 +148,10 @@ export function createApp({ store, config, clock = () => new Date() }: AppDeps) 
       onError: (c) => error(c, 413, "payload_too_large", `Blobs are limited to ${config.maxBlobBytes} bytes.`),
     }),
     async (c) => {
-      const group = authenticate(c);
-      if (!group) return groupNotFound(c);
-
-      const { machineId, name } = c.req.param();
-      const isGroupBlob = machineId === GROUP_MACHINE_ID;
-      if (!isGroupBlob && !isValidId(machineId)) {
-        return error(c, 422, "invalid_machine_id", "machineId must be 16 bytes of base64url or \"group\".");
-      }
-      // `retired` is the only group blob, and it only lives under `group` (protocol §5.3, §6.4).
-      if (!BLOB_NAME_PATTERN.test(name) || isGroupBlob !== (name === "retired")) {
-        return error(c, 422, "invalid_name", `"${name}" is not a valid blob name here.`);
-      }
+      const group = c.get("group");
+      const address = blobAddress(c);
+      if (address instanceof Response) return address;
+      const { machineId, name, isGroupBlob } = address;
 
       const body = new Uint8Array(await c.req.arrayBuffer());
       if (body.length === 0) return invalidRequest(c, "Blob body must not be empty.");
@@ -165,17 +178,15 @@ export function createApp({ store, config, clock = () => new Date() }: AppDeps) 
   );
 
   app.get(blobRoute, (c) => {
-    const group = authenticate(c);
-    if (!group) return groupNotFound(c);
-    const { machineId, name } = c.req.param();
-    const blob = store.getBlob(group.groupId, machineId, name);
+    const address = blobAddress(c);
+    if (address instanceof Response) return address;
+    const blob = store.getBlob(c.get("group").groupId, address.machineId, address.name);
     if (!blob) return error(c, 404, "blob_not_found", "No blob at this address.");
     return c.body(new Uint8Array(blob.body), 200, { "content-type": "application/octet-stream", etag: blob.etag });
   });
 
   app.get("/v1/groups/:groupId/changes", (c) => {
-    const group = authenticate(c);
-    if (!group) return groupNotFound(c);
+    const group = c.get("group");
 
     const since = c.req.query("since");
     const afterSeq = since === undefined ? 0 : decodeCursor(since);

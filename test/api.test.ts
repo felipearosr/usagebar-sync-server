@@ -43,7 +43,13 @@ const createGroup = (c: Creds) =>
 const blobPath = (c: Creds, machineId: string, name: string) =>
   `/v1/groups/${c.groupId}/machines/${machineId}/blobs/${name}`;
 
-const putBlob = (c: Creds, machineId: string, name: string, body: Uint8Array<ArrayBuffer>, headers: Record<string, string> = {}) =>
+const putBlob = (
+  c: Creds,
+  machineId: string,
+  name: string,
+  body: Uint8Array<ArrayBuffer>,
+  headers: Record<string, string> = {},
+) =>
   app.request(blobPath(c, machineId, name), {
     method: "PUT",
     headers: {
@@ -130,6 +136,25 @@ describe("authentication", () => {
     await expectError(await getBlob(c, newMachineId(), "profile", wrong), 404, "group_not_found");
     await expectError(
       await putBlob({ ...c, authKey: wrong }, newMachineId(), "profile", new Uint8Array([1])),
+      404,
+      "group_not_found",
+    );
+  });
+
+  it("accepts the Bearer scheme case-insensitively", async () => {
+    const c = newCredentials();
+    await createGroup(c);
+    const res = await app.request(`/v1/groups/${c.groupId}/changes`, {
+      headers: { authorization: `bearer ${c.authKey}` },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("checks credentials before the body size", async () => {
+    const c = newCredentials();
+    await createGroup(c);
+    await expectError(
+      await putBlob({ ...c, authKey: b64url(randomBytes(32)) }, newMachineId(), "profile", new Uint8Array(65537)),
       404,
       "group_not_found",
     );
@@ -228,6 +253,13 @@ describe("blob names", () => {
     const c = newCredentials();
     await createGroup(c);
     await expectError(await putBlob(c, "group", name, new Uint8Array([1])), 422, "invalid_name");
+  });
+
+  it("validates the address on GET too", async () => {
+    const c = newCredentials();
+    await createGroup(c);
+    await expectError(await getBlob(c, newMachineId(), "retired"), 422, "invalid_name");
+    await expectError(await getBlob(c, "nope", "profile"), 422, "invalid_machine_id");
   });
 
   it("rejects a malformed Machine ID", async () => {

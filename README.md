@@ -44,8 +44,8 @@ Requires Node.js ≥ 22.13 and pnpm.
 
 ```sh
 pnpm install
-pnpm dev                 # builds, then listens on 0.0.0.0:8787, data in ./data/sync.db
-scripts/smoke.sh         # create a group, push a blob, read it back with curl
+pnpm build && pnpm start   # listens on 0.0.0.0:8787, data in ./data/sync.db
+scripts/smoke.sh           # create a group, push a blob, read it back with curl
 ```
 
 ## Configuration

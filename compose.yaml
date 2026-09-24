@@ -1,0 +1,14 @@
+services:
+  sync-server:
+    build: .
+    ports:
+      - "8787:8787"
+    environment:
+      OPERATOR: "My Sync Server"
+      MAX_MACHINES: "10"
+    volumes:
+      - sync-data:/data
+    restart: unless-stopped
+
+volumes:
+  sync-data:

@@ -4,9 +4,10 @@ An open-source Sync Server for [UsageBar](https://github.com/felipearosr/UsageBa
 
 The server stores opaque, end-to-end-encrypted blobs. It never sees keys, Spend amounts, providers, models or machine names. The wire contract is the **Machine Sync protocol v1**, specified in the UsageBar repo:
 
-- Protocol: [`docs/machine-sync-protocol.md`](https://github.com/felipearosr/UsageBar/blob/machine-sync-design/docs/machine-sync-protocol.md)
-- Glossary: [`CONTEXT.md`](https://github.com/felipearosr/UsageBar/blob/machine-sync-design/CONTEXT.md)
-- Decisions: [`docs/adr/`](https://github.com/felipearosr/UsageBar/tree/machine-sync-design/docs/adr)
+- Protocol: [`docs/machine-sync-protocol.md`](https://github.com/felipearosr/UsageBar/blob/main/docs/machine-sync-protocol.md)
+- Glossary: [`CONTEXT.md`](https://github.com/felipearosr/UsageBar/blob/main/CONTEXT.md)
+- Decisions: [`docs/adr/`](https://github.com/felipearosr/UsageBar/tree/main/docs/adr)
+- Test vectors: [`docs/machine-sync-test-vectors/`](https://github.com/felipearosr/UsageBar/tree/main/docs/machine-sync-test-vectors) (copied into `test/fixtures/` and checked by `test/vectors.test.ts`)
 
 Anyone can build a compatible server from the spec. This one is written in TypeScript on [Hono](https://hono.dev), with SQLite through Node's built-in `node:sqlite`.
 

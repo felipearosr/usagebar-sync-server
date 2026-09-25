@@ -12,7 +12,8 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "admin": "node dist/admin.js"
   },
   "packageManager": "pnpm@10.32.1",
   "dependencies": {

@@ -87,6 +87,10 @@ node dist/admin.js token revoke <token-id>                            # only tok
 - `--max-machines` sets the group's `maxMachines` (default `MAX_MACHINES`). Retired Machines count until they are deleted.
 - `--days` or `--expires-at` sets an expiry. An expired token can't create a group, and it becomes the group's `expiresAt`. After that, writes return `403 enrollment_expired`, reads keep working for 30 days, and deletion keeps working.
 
+## Hosted plan
+
+[`src/hosted/`](src/hosted) is the code for the paid hosted Sync Server: a small website that sells a 14-day trial or a personal subscription through Stripe and hands out an Enrollment Token whose expiry follows the subscription. It runs this same server with `ENROLLMENT=required`, from the same image, as `node dist/hosted/server.js`. Self-hosting doesn't use it. See [`docs/hosted.md`](docs/hosted.md) for how it works, its settings, and deploy steps.
+
 ## Retention
 
 Once at startup and then every hour, the server deletes `day-*` blobs dated more than the group's `retentionDays` before the current UTC date. `profile` and `retired` blobs are kept while the group exists.

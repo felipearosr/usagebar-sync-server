@@ -111,7 +111,8 @@ function expiryState(group: Group, now: Date): "active" | "expired" | "closed" {
 
 const enrollmentExpired = (c: Context) => error(c, 403, "enrollment_expired", "This group's enrollment has expired.");
 
-function clientKey(c: Context, trustProxy: boolean, remoteAddress: AppDeps["remoteAddress"]): string {
+/** The rate-limit key for a request: the last `X-Forwarded-For` hop behind a trusted proxy, else the socket address. */
+export function clientKey(c: Context, trustProxy: boolean, remoteAddress: AppDeps["remoteAddress"]): string {
   if (trustProxy) {
     const hop = c.req.header("x-forwarded-for")?.split(",").at(-1)?.trim();
     if (hop) return hop;

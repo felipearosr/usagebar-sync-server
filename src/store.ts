@@ -281,6 +281,31 @@ export class SqliteStore {
     return rows.map(toToken);
   }
 
+  getEnrollmentToken(tokenId: string): EnrollmentToken | undefined {
+    const row = this.db.prepare(`SELECT ${TOKEN_COLUMNS} FROM enrollment_tokens WHERE token_id = ?`).get(tokenId) as
+      TokenRow | undefined;
+    return row && toToken(row);
+  }
+
+  /**
+   * Moves a token's expiry, and the `expiresAt` of the group it created if that group still exists. This is how an
+   * expiry follows a subscription: extending it reopens writes, shortening it closes them. Returns false for an
+   * unknown token.
+   */
+  setEnrollmentTokenExpiry(tokenId: string, expiresAt: string | null): boolean {
+    return this.transaction(() => {
+      const row = this.db.prepare("SELECT group_id FROM enrollment_tokens WHERE token_id = ?").get(tokenId) as
+        | { group_id: string | null }
+        | undefined;
+      if (!row) return false;
+      this.db.prepare("UPDATE enrollment_tokens SET expires_at = ? WHERE token_id = ?").run(expiresAt, tokenId);
+      if (row.group_id !== null) {
+        this.db.prepare("UPDATE groups SET expires_at = ? WHERE group_id = ?").run(expiresAt, row.group_id);
+      }
+      return true;
+    });
+  }
+
   /** Deletes a token that hasn't created a group yet. A used token stays, because it records the binding. */
   revokeEnrollmentToken(tokenId: string): "revoked" | "not_found" | "used" {
     return this.transaction(() => {

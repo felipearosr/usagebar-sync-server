@@ -13,10 +13,25 @@ const RETENTION_SWEEP_MS = 60 * 60 * 1000;
 
 export type RunningServer = { url: string; port: number; close: () => Promise<void> };
 
-export async function startServer(config: ServerConfig): Promise<RunningServer> {
+/** A request handler in the shape `@hono/node-server` serves. `env` carries the Node bindings. */
+export type FetchHandler = (request: Request, env?: unknown) => Response | Promise<Response>;
+
+export type ServerExtension = {
+  /** Wraps the Sync Server's handler, for example to serve more routes next to `/v1`. */
+  fetch: FetchHandler;
+  /** Runs after the listener has closed, before the store is closed. */
+  close?: () => void;
+};
+
+export async function startServer(
+  config: ServerConfig,
+  extend?: (sync: FetchHandler, store: SqliteStore) => ServerExtension,
+): Promise<RunningServer> {
   if (config.dbPath !== ":memory:") mkdirSync(dirname(config.dbPath), { recursive: true });
   const store = new SqliteStore(config.dbPath);
   const app = createApp({ store, config, remoteAddress: (c) => getConnInfo(c).remote.address });
+  const sync: FetchHandler = (request, env) => app.fetch(request, env as object);
+  const extension = extend?.(sync, store);
 
   const sweep = () => {
     try {
@@ -31,7 +46,7 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
   sweeper.unref();
 
   const server = await new Promise<ReturnType<typeof serve>>((resolve) => {
-    const s = serve({ fetch: app.fetch, hostname: config.host, port: config.port }, () => resolve(s));
+    const s = serve({ fetch: extension?.fetch ?? sync, hostname: config.host, port: config.port }, () => resolve(s));
   });
   const { port } = server.address() as AddressInfo;
   const host = config.host === "0.0.0.0" ? "127.0.0.1" : config.host;
@@ -43,6 +58,7 @@ export async function startServer(config: ServerConfig): Promise<RunningServer> 
       new Promise((resolve, reject) =>
         server.close((err) => {
           clearInterval(sweeper);
+          extension?.close?.();
           store.close();
           if (err) reject(err);
           else resolve();

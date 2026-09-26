@@ -1,9 +1,9 @@
-import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { loadConfig } from "./config.js";
+import { mintEnrollmentToken, timestamp } from "./enrollment.js";
 import { SqliteStore, type EnrollmentToken } from "./store.js";
 
 const USAGE = `Usage: node dist/admin.js <command>
@@ -27,9 +27,6 @@ for example: docker exec usagebar-sync node dist/admin.js token create --days 30
 export type AdminIO = { out: (line: string) => void; err: (line: string) => void };
 
 class UsageError extends Error {}
-
-/** RFC 3339 UTC with second precision, the same form the API uses. */
-const timestamp = (date: Date) => date.toISOString().replace(/\.\d{3}Z$/, "Z");
 
 function positiveInteger(name: string, raw: string | undefined): number | undefined {
   if (raw === undefined) return undefined;
@@ -61,18 +58,8 @@ function createToken(args: string[], store: SqliteStore, now: Date, io: AdminIO)
     expiresAt = timestamp(new Date(parsed));
   }
 
-  const secret = randomBytes(32);
-  const token = store.insertEnrollmentToken(
-    {
-      tokenId: randomBytes(6).toString("base64url"),
-      maxMachines,
-      expiresAt,
-      note: values.note ?? null,
-      createdAt: timestamp(now),
-    },
-    createHash("sha256").update(secret).digest(),
-  );
-  io.out(secret.toString("base64url"));
+  const { secret, token } = mintEnrollmentToken(store, { maxMachines, expiresAt, note: values.note ?? null, now });
+  io.out(secret);
   io.err(
     `Created token ${token.tokenId} (max machines: ${maxMachines ?? "server default"}, ` +
       `expires: ${expiresAt ?? "never"}). Clients send it as "Authorization: Enrollment <token>".`,

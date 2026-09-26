@@ -17,6 +17,9 @@ function newCredentials() {
 const newMachineId = () => b64url(randomBytes(16));
 
 const config: AppConfig = {
+  enrollment: "none",
+  rateLimit: { perMinute: 0, burst: 1 },
+  trustProxy: false,
   operator: "Test Sync",
   maxBlobBytes: 65536,
   retentionDays: 400,
@@ -186,7 +189,8 @@ describe("PUT and GET a blob", () => {
     const put = await putBlob(c, machine, "day-2026-09-23", envelope);
     expect(put.status).toBe(200);
     const { etag, updatedAt } = (await put.json()) as { etag: string; updatedAt: string };
-    expect(etag).toMatch(/\S/);
+    expect(etag).toMatch(/^"\S+"$/);
+    expect(put.headers.get("etag")).toBe(etag);
     expect(updatedAt).toBe("2026-09-23T14:05:12Z");
 
     const get = await getBlob(c, machine, "day-2026-09-23");
@@ -281,6 +285,18 @@ describe("If-Match", () => {
     const stale = await putBlob(c, "group", "retired", new Uint8Array([3]), { "if-match": etag });
     await expectError(stale, 412, "precondition_failed");
     expect(new Uint8Array(await (await getBlob(c, "group", "retired")).arrayBuffer())).toEqual(new Uint8Array([2]));
+  });
+
+  it("treats If-Match: * as any existing blob", async () => {
+    const c = newCredentials();
+    await createGroup(c);
+    await expectError(
+      await putBlob(c, "group", "retired", new Uint8Array([1]), { "if-match": "*" }),
+      412,
+      "precondition_failed",
+    );
+    await putBlob(c, "group", "retired", new Uint8Array([1]));
+    expect((await putBlob(c, "group", "retired", new Uint8Array([2]), { "if-match": "*" })).status).toBe(200);
   });
 
   it("fails with 412 when the blob does not exist yet", async () => {
@@ -425,6 +441,11 @@ describe("GET /v1/groups/{groupId}/changes", () => {
 
 describe("unknown routes", () => {
   it("return a protocol error body", async () => {
-    await expectError(await app.request("/v2/info"), 404, "not_found");
+    await expectError(await app.request("/v1/nope"), 404, "not_found");
+    await expectError(await app.request("/"), 404, "not_found");
+  });
+
+  it("report other protocol versions as unsupported_version", async () => {
+    await expectError(await app.request("/v2/info"), 400, "unsupported_version");
   });
 });

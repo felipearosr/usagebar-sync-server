@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { AppConfig } from "./app.js";
+import { ENROLLMENT_MODES, type AppConfig, type EnrollmentMode } from "./app.js";
 
 export type ServerConfig = AppConfig & {
   host: string;
@@ -15,6 +15,21 @@ function integer(env: NodeJS.ProcessEnv, name: string, fallback: number, min: nu
   return value;
 }
 
+function enrollmentMode(env: NodeJS.ProcessEnv): EnrollmentMode {
+  const raw = env.ENROLLMENT || "none";
+  if (!(ENROLLMENT_MODES as readonly string[]).includes(raw)) {
+    throw new Error(`ENROLLMENT must be one of ${ENROLLMENT_MODES.join(", ")}, got "${raw}"`);
+  }
+  return raw as EnrollmentMode;
+}
+
+function boolean(env: NodeJS.ProcessEnv, name: string): boolean {
+  const raw = (env[name] ?? "").toLowerCase();
+  if (raw === "" || raw === "0" || raw === "false") return false;
+  if (raw === "1" || raw === "true") return true;
+  throw new Error(`${name} must be true or false, got "${env[name]}"`);
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   return {
     host: env.HOST || "0.0.0.0",
@@ -24,5 +39,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     maxBlobBytes: integer(env, "MAX_BLOB_BYTES", 65536, 1),
     retentionDays: integer(env, "RETENTION_DAYS", 400, 1),
     maxMachines: integer(env, "MAX_MACHINES", 10, 1),
+    enrollment: enrollmentMode(env),
+    rateLimit: {
+      perMinute: integer(env, "RATE_LIMIT_PER_MINUTE", 120, 0),
+      burst: integer(env, "RATE_LIMIT_BURST", 600, 1),
+    },
+    trustProxy: boolean(env, "TRUST_PROXY"),
   };
 }

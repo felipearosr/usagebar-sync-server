@@ -12,7 +12,7 @@ import {
   type Html,
   type SiteInfo,
 } from "./pages.js";
-import { subscriptionIdOfEvent, verifyWebhookSignature, type StripeApi } from "./stripe.js";
+import { StripeError, subscriptionIdOfEvent, verifyWebhookSignature, type StripeApi } from "./stripe.js";
 
 export type SiteDeps = {
   billing: Billing;
@@ -27,6 +27,26 @@ export type SiteDeps = {
 
 /** Largest webhook body accepted. Stripe events are a few KiB. */
 const MAX_WEBHOOK_BYTES = 256 * 1024;
+
+/** Largest form body accepted by `/checkout` and `/welcome/reissue`. Each carries one short field. */
+const MAX_FORM_BYTES = 4 * 1024;
+
+/**
+ * Logs a failure without the error's message. Stripe's messages can quote the Checkout Session ID, which unlocks the
+ * welcome page, so only the HTTP status (or the error's name and system code) reaches the log.
+ */
+function logFailure(what: string, error: unknown) {
+  let detail: string;
+  if (error instanceof StripeError) {
+    detail = `Stripe returned ${error.status}`;
+  } else if (error instanceof Error) {
+    const code = (error.cause as { code?: unknown } | undefined)?.code;
+    detail = typeof code === "string" ? `${error.name} (${code})` : error.name;
+  } else {
+    detail = typeof error;
+  }
+  console.error(`${what}: ${detail}`);
+}
 
 const SECURITY_HEADERS: Record<string, string> = {
   "content-security-policy":
@@ -44,7 +64,12 @@ export function createSite(deps: SiteDeps) {
   const app = new Hono();
   const limiter = new RateLimiter(deps.rateLimit);
 
-  const show = (c: Context, body: Html, status: 200 | 400 | 404 | 429 | 500 | 502 = 200) => c.html(body.value, status);
+  const show = (c: Context, body: Html, status: 200 | 400 | 404 | 413 | 429 | 500 | 502 = 200) =>
+    c.html(body.value, status);
+  const formLimit = bodyLimit({
+    maxSize: MAX_FORM_BYTES,
+    onError: (c) => show(c, messagePage(site, "Request too large", "That form was larger than expected."), 413),
+  });
   const failure = (c: Context) =>
     show(
       c,
@@ -68,7 +93,7 @@ export function createSite(deps: SiteDeps) {
   app.get("/", (c) => show(c, landingPage(site)));
   app.get("/privacy", (c) => show(c, privacyPage(site)));
 
-  app.post("/checkout", async (c) => {
+  app.post("/checkout", formLimit, async (c) => {
     const form = await c.req.parseBody();
     const trial = form.plan === "trial";
     try {
@@ -80,7 +105,7 @@ export function createSite(deps: SiteDeps) {
       });
       return c.redirect(session.url, 303);
     } catch (error) {
-      console.error("Checkout failed", error);
+      logFailure("Checkout failed", error);
       return failure(c);
     }
   });
@@ -91,7 +116,7 @@ export function createSite(deps: SiteDeps) {
     try {
       result = await action(sessionId);
     } catch (error) {
-      console.error("Claim failed", error);
+      logFailure("Claim failed", error);
       return failure(c);
     }
     switch (result.kind) {
@@ -117,7 +142,7 @@ export function createSite(deps: SiteDeps) {
 
   app.get("/welcome", (c) => claimed(c, c.req.query("session_id") ?? "", (id) => billing.claim(id)));
 
-  app.post("/welcome/reissue", async (c) => {
+  app.post("/welcome/reissue", formLimit, async (c) => {
     const form = await c.req.parseBody();
     const sessionId = typeof form.session_id === "string" ? form.session_id : "";
     return claimed(c, sessionId, (id) => billing.reissue(id));
@@ -144,7 +169,7 @@ export function createSite(deps: SiteDeps) {
         // Non-2xx makes Stripe retry, which is what we want when Stripe itself was unreachable.
         return c.json({ received: true, result: await billing.sync(subscriptionId) });
       } catch (error) {
-        console.error("Webhook sync failed", error);
+        logFailure("Webhook sync failed", error);
         return c.json({ error: "sync_failed" }, 500);
       }
     },

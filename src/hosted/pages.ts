@@ -29,7 +29,7 @@ export type SiteInfo = {
   retentionDays: number;
   trialDays: number;
   priceLabel: string | null;
-  portalUrl: string | null;
+  portalUrl: string;
 };
 
 const STYLE = `
@@ -87,9 +87,7 @@ function page(title: string, site: SiteInfo, body: Html): Html {
           <header>
             <a href="/">${site.operator}</a>
             <nav>
-              <a href="/privacy">Privacy</a>${
-                site.portalUrl && html`<a href="${site.portalUrl}">Manage subscription</a>`
-              }
+              <a href="/privacy">Privacy</a><a href="${site.portalUrl}">Manage subscription</a>
             </nav>
           </header>
           ${body}
@@ -145,9 +143,10 @@ export function landingPage(site: SiteInfo): Html {
         <li>Pair your other machines with the Pairing Link the app shows you.</li>
       </ol>
       <p class="muted">
-        The token lasts as long as the subscription. A trial lasts ${site.trialDays} days, subscribing extends it, and
-        cancelling keeps it working until the end of the period you paid for. After that, your machines can still read
-        their data for 30 days.
+        The token lasts as long as the subscription. A trial lasts ${site.trialDays} days. To keep going, add a card
+        under <a href="${site.portalUrl}">Manage subscription</a> rather than subscribing again, which would start a
+        second subscription with a new token. Cancelling keeps the token working until the end of the period you paid
+        for. After that, your machines can still read their data for 30 days.
       </p>`,
   );
 }

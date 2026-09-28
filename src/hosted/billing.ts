@@ -8,6 +8,8 @@ export type PlanConfig = {
   maxMachines: number;
   /** Days added past a paid period's end, so renewals have time to settle. */
   graceDays: number;
+  /** Hours added past a trial's end, so a late conversion webhook doesn't stop writes. */
+  trialGraceHours: number;
 };
 
 /** What the welcome page shows for a Checkout Session. */
@@ -127,7 +129,7 @@ export class Billing {
 
   /** RFC 3339 expiry, or `undefined` while the subscription grants nothing. */
   private expiryOf(sub: Subscription): string | undefined {
-    const seconds = entitlementExpiry(sub, this.deps.plan.graceDays);
+    const seconds = entitlementExpiry(sub, this.deps.plan);
     return seconds === null ? undefined : timestamp(new Date(seconds * 1000));
   }
 

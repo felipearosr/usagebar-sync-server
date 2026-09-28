@@ -1,10 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/app.js";
 import { loadHostedConfig, type HostedConfig } from "../../src/hosted/config.js";
 import { createHostedHandler } from "../../src/hosted/server.js";
 import { HostedStore } from "../../src/hosted/store.js";
-import { signWebhookPayload } from "../../src/hosted/stripe.js";
+import { signWebhookPayload, StripeError } from "../../src/hosted/stripe.js";
 import type { FetchHandler } from "../../src/server.js";
 import { SqliteStore } from "../../src/store.js";
 import { DAY, FakeStripe } from "./fake-stripe.js";
@@ -178,14 +178,15 @@ describe("trial → subscription → cancellation", () => {
 
     // The site stores the token's hash and Stripe IDs, never the token itself.
     const [stored] = syncStore.listEnrollmentTokens();
-    expect(stored).toMatchObject({ maxMachines: 10, expiresAt: iso(trialEnd), groupId: null });
+    // The trial's 14 days plus the 24-hour trial grace.
+    expect(stored).toMatchObject({ maxMachines: 10, expiresAt: iso(trialEnd + DAY), groupId: null });
     expect(JSON.stringify(hostedStore.get("sub_trial"))).not.toContain(token);
 
-    // The app creates its group with the token. The trial's 14 days become the group's expiry.
+    // The app creates its group with the token. The token's expiry becomes the group's.
     const { response, groupId, bearer } = await createGroup(token);
     expect(response.status).toBe(201);
     expect(await response.json()).toEqual({
-      limits: { maxMachines: 10, retentionDays: 400, expiresAt: iso(trialEnd) },
+      limits: { maxMachines: 10, retentionDays: 400, expiresAt: iso(trialEnd + DAY) },
     });
 
     // Subscribing: the trial converts, Stripe sends a webhook, and the expiry moves to the paid period's end.
@@ -227,6 +228,28 @@ describe("trial → subscription → cancellation", () => {
     const push = await pushBlob(groupId, bearer);
     expect(push.status).toBe(403);
     expect(await push.json()).toMatchObject({ error: { code: "enrollment_expired" } });
+  });
+
+  it("keeps writes open through the trial grace while the conversion webhook is late", async () => {
+    const trialEnd = startTrial();
+    const token = tokenFrom(await (await request("/welcome?session_id=cs_test_trial")).text());
+    const { groupId, bearer } = await createGroup(token);
+
+    // The trial converted at trialEnd, but the webhook hasn't arrived yet.
+    now = (trialEnd + 6 * 3600) * 1000;
+    expect((await pushBlob(groupId, bearer)).status).toBe(200);
+
+    stripe.update("sub_trial", {
+      status: "active",
+      currentPeriodStart: trialEnd,
+      currentPeriodEnd: trialEnd + 30 * DAY,
+    });
+    await webhook(subscriptionEvent("sub_trial"));
+    expect((await groupLimits(groupId, bearer)).expiresAt).toBe(iso(trialEnd + 33 * DAY));
+
+    // Without the webhook, writes would have stopped once the grace ran out.
+    now = (trialEnd + DAY + 1) * 1000;
+    expect((await pushBlob(groupId, bearer)).status).toBe(200);
   });
 
   it("follows an immediate cancellation to the moment it ended", async () => {
@@ -377,13 +400,21 @@ describe("hosted config", () => {
     STRIPE_SECRET_KEY: "sk_test_x",
     STRIPE_WEBHOOK_SECRET: "whsec_x",
     STRIPE_PRICE_ID: "price_x",
+    STRIPE_PORTAL_URL: "https://billing.stripe.com/p/login/test_x",
   };
 
   it("requires enrollment and uses the plan defaults", () => {
     const loaded = loadHostedConfig({ ...base, ENROLLMENT: "none", DATA_DIR: "/data" });
     expect(loaded.server.enrollment).toBe("required");
     expect(loaded.hostedDbPath).toBe("/data/hosted.db");
-    expect(loaded.plan).toEqual({ maxMachines: 10, trialDays: 14, graceDays: 3, priceLabel: null });
+    expect(loaded.plan).toEqual({
+      maxMachines: 10,
+      trialDays: 14,
+      graceDays: 3,
+      trialGraceHours: 24,
+      priceLabel: null,
+    });
+    expect(loadHostedConfig({ ...base, TRIAL_GRACE_HOURS: "0" }).plan.trialGraceHours).toBe(0);
   });
 
   it("refuses live Stripe keys unless explicitly allowed", () => {
@@ -403,5 +434,52 @@ describe("hosted config", () => {
   it("names each missing setting", () => {
     expect(() => loadHostedConfig({ ...base, STRIPE_PRICE_ID: "" })).toThrow(/STRIPE_PRICE_ID/);
     expect(() => loadHostedConfig({ ...base, PUBLIC_URL: undefined })).toThrow(/PUBLIC_URL/);
+    // Without the portal, a trial user's only way to pay is a second checkout and a second token.
+    expect(() => loadHostedConfig({ ...base, STRIPE_PORTAL_URL: "" })).toThrow(/STRIPE_PORTAL_URL/);
+  });
+});
+
+describe("form limits and logging", () => {
+  let logged: string[];
+
+  beforeEach(() => {
+    logged = [];
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map((arg) => (arg instanceof Error ? `${arg.message}\n${arg.stack}` : String(arg))).join(" "));
+    });
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("refuses oversized forms on /checkout and /welcome/reissue without calling Stripe", async () => {
+    const padding = "x".repeat(8 * 1024);
+    expect((await post("/checkout", { plan: "trial", padding })).status).toBe(413);
+    expect((await post("/welcome/reissue", { session_id: "cs_test_trial", padding })).status).toBe(413);
+    expect(stripe.calls).toBe(0);
+    expect((await post("/checkout", { plan: "trial" })).status).toBe(303);
+  });
+
+  it("logs Stripe failures by status, never with a message that can quote the Checkout Session ID", async () => {
+    startTrial();
+    // Claimed once, so the webhook knows the subscription and asks Stripe about it.
+    await request("/welcome?session_id=cs_test_trial");
+    stripe.failing = new StripeError(500, "Something went wrong with checkout.session cs_test_trial");
+    expect((await request("/welcome?session_id=cs_test_trial")).status).toBe(502);
+    expect((await post("/welcome/reissue", { session_id: "cs_test_trial" })).status).toBe(502);
+    expect((await post("/checkout", { plan: "trial" })).status).toBe(502);
+    expect((await webhook(subscriptionEvent("sub_trial"))).status).toBe(500);
+
+    expect(logged).toEqual([
+      "Claim failed: Stripe returned 500",
+      "Claim failed: Stripe returned 500",
+      "Checkout failed: Stripe returned 500",
+      "Webhook sync failed: Stripe returned 500",
+    ]);
+  });
+
+  it("logs a network failure by its name and system code", async () => {
+    stripe.failing = new TypeError("fetch failed cs_test_trial", { cause: { code: "ECONNREFUSED" } });
+    await request("/welcome?session_id=cs_test_trial");
+    expect(logged).toEqual(["Claim failed: TypeError (ECONNREFUSED)"]);
   });
 });

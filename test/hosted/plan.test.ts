@@ -4,17 +4,19 @@ import { DAY, subscription } from "./fake-stripe.js";
 
 const start = 1_790_000_000;
 const periodEnd = start + 30 * DAY;
-const grace = 3;
+const grace = { graceDays: 3, trialGraceHours: 24 };
+const HOUR = 3_600;
 
 describe("entitlementExpiry", () => {
-  it("runs a trial to its end", () => {
+  it("runs a trial to its end plus the trial grace, so a late conversion webhook doesn't stop writes", () => {
     const sub = subscription({
       id: "sub_1",
       status: "trialing",
       trialEnd: start + 14 * DAY,
       currentPeriodEnd: start + 14 * DAY,
     });
-    expect(entitlementExpiry(sub, grace)).toBe(start + 14 * DAY);
+    expect(entitlementExpiry(sub, grace)).toBe(start + 14 * DAY + 24 * HOUR);
+    expect(entitlementExpiry(sub, { ...grace, trialGraceHours: 0 })).toBe(start + 14 * DAY);
   });
 
   it("runs an active subscription to its period end plus grace", () => {

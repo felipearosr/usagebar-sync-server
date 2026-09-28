@@ -16,6 +16,7 @@ beforeAll(async () => {
     STRIPE_SECRET_KEY: "sk_test_fake",
     STRIPE_WEBHOOK_SECRET: "whsec_test",
     STRIPE_PRICE_ID: "price_test",
+    STRIPE_PORTAL_URL: "https://billing.stripe.com/p/login/test_123",
   });
   server = await startHostedServer(config, stripe);
 });

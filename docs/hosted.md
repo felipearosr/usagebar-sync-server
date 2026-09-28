@@ -24,7 +24,7 @@ The expiry is written to the token and, once the token has created a group, to t
 
 | Subscription | Token and group expire at |
 |---|---|
-| Trial (`trialing`) | The trial's end, 14 days after checkout |
+| Trial (`trialing`) | The trial's end, 14 days after checkout, plus `TRIAL_GRACE_HOURS` (24) so a late conversion webhook doesn't stop a paying user's writes |
 | Paid (`active`) | The paid period's end, plus `RENEWAL_GRACE_DAYS` (3) so a renewal has time to settle |
 | Cancelled, or set to cancel | The period end, with no grace |
 | Renewal failing (`past_due`, `unpaid`) | The start of the unpaid period, plus the grace |
@@ -33,7 +33,9 @@ The expiry is written to the token and, once the token has created a group, to t
 
 After the expiry, the Sync Server stops writes (`403 enrollment_expired`) and keeps reads working for 30 days. Extending the expiry opens writes again, and clients see the new `expiresAt` in `limits` on their next `changes` call.
 
-A trial asks for no card. If the customer never adds one, Stripe cancels the subscription at the trial's end, and the token ends with it.
+A trial asks for no card. If the customer never adds one, Stripe cancels the subscription at the trial's end, and the token ends with it. A trial set to cancel ends when it's scheduled to, with no grace.
+
+To keep going after a trial, the customer adds a card in the customer portal ("Manage subscription"), which converts the same subscription and keeps the same token. "Subscribe now" would start a second subscription with a second token, and the existing group can't move to it. That's why `STRIPE_PORTAL_URL` is required.
 
 Webhooks don't trust the event body. The site re-reads the subscription from Stripe for every relevant event (`customer.subscription.*`, `invoice.*`, `checkout.session.completed`), so events that arrive late or out of order can't set a stale expiry.
 
@@ -47,7 +49,7 @@ The site's own data lives in `hosted.db`, next to the Sync Server's `sync.db`: S
 
 The welcome page shows the token once. Reloading the page shows the subscription instead, with a "Replace my token" button while the token hasn't created a group (or its group was deleted). Replacing it revokes the old token. A replaced token whose group was deleted is expired, so it can't recreate that group.
 
-The welcome URL contains the Checkout Session ID, and that ID is what proves the visitor paid. Anyone holding the URL can see the subscription's expiry and replace an unused token. The pages send `Referrer-Policy: no-referrer` and `Cache-Control: no-store` so the URL doesn't leak through links or caches.
+The welcome URL contains the Checkout Session ID, and that ID is what proves the visitor paid. Anyone holding the URL can see the subscription's expiry and replace an unused token. The pages send `Referrer-Policy: no-referrer` and `Cache-Control: no-store` so the URL doesn't leak through links or caches. The site's own logs name only Stripe's HTTP status for a failure, never Stripe's error message, which can quote the session ID. A reverse proxy's access log will still record `/welcome?session_id=…`, so turn off query strings in that log or keep it short-lived.
 
 ## Why it lives in this repo
 
@@ -68,13 +70,14 @@ Everything from the main [README](../README.md#configuration) applies, except th
 | `STRIPE_SECRET_KEY` | required | A **test-mode** key (`sk_test_…` or `rk_test_…`). Live keys are refused unless `STRIPE_ALLOW_LIVE=true` |
 | `STRIPE_WEBHOOK_SECRET` | required | The webhook endpoint's signing secret (`whsec_…`) |
 | `STRIPE_PRICE_ID` | required | The recurring price for the personal plan (`price_…`) |
-| `STRIPE_PORTAL_URL` | none | The customer portal's login link. Shown as "Manage subscription" |
+| `STRIPE_PORTAL_URL` | required | The customer portal's login link. Shown as "Manage subscription", and the only way a trial becomes a paid subscription on the same token |
 | `STRIPE_ALLOW_LIVE` | `false` | Allow a live secret key |
 | `STRIPE_API_BASE` | `https://api.stripe.com` | Only for pointing at a local mock such as `stripe-mock` |
 | `PLAN_PRICE` | none | Price text shown on the landing page, for example `$3 / month` |
 | `PLAN_MAX_MACHINES` | `MAX_MACHINES` (10) | Machine cap on each token |
 | `TRIAL_DAYS` | `14` | Trial length |
 | `RENEWAL_GRACE_DAYS` | `3` | Days added past a paid period's end |
+| `TRIAL_GRACE_HOURS` | `24` | Hours added past a trial's end |
 | `HOSTED_DB_PATH` | `hosted.db` next to `sync.db` | The site's own database |
 
 ## Deploying
@@ -98,7 +101,7 @@ Nothing has been deployed yet. These are the steps for a single small VM or cont
      usagebar-sync-server node dist/hosted/server.js
    ```
 
-   Pass the secrets through your host's secret store rather than the shell history where you can.
+   Pass the secrets through your host's secret store rather than the shell history where you can. `POST /checkout` and `POST /welcome/reissue` refuse bodies over 4 KiB, and the webhook refuses bodies over 256 KiB, so the proxy doesn't need its own limits for them.
 4. **TLS.** Put a reverse proxy in front, which also sets `X-Forwarded-For` for `TRUST_PROXY`. With Caddy:
 
    ```

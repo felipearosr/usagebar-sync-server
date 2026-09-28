@@ -8,7 +8,8 @@ export class FakeStripe implements StripeApi {
   readonly subscriptions = new Map<string, Subscription>();
   readonly checkouts: CreateCheckoutInput[] = [];
   calls = 0;
-  failing = false;
+  /** `true` throws a generic error; an `Error` is thrown as is. */
+  failing: boolean | Error = false;
 
   async createCheckoutSession(input: CreateCheckoutInput) {
     this.guard();
@@ -41,7 +42,7 @@ export class FakeStripe implements StripeApi {
 
   private guard() {
     this.calls += 1;
-    if (this.failing) throw new Error("Stripe is down");
+    if (this.failing) throw this.failing instanceof Error ? this.failing : new Error("Stripe is down");
   }
 }
 

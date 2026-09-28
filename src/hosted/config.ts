@@ -11,8 +11,11 @@ export type HostedConfig = {
     secretKey: string;
     webhookSecret: string;
     priceId: string;
-    /** Stripe's customer portal login link, where customers manage or cancel. Optional. */
-    portalUrl: string | null;
+    /**
+     * Stripe's customer portal login link, where customers manage, cancel, or turn a trial into a subscription.
+     * Required: without it a trial user's only way to pay is a second checkout, which mints a second token.
+     */
+    portalUrl: string;
     /** Stripe API base URL. Only changed to point at a local mock such as stripe-mock. */
     apiBase: string;
   };
@@ -20,6 +23,8 @@ export type HostedConfig = {
     maxMachines: number;
     trialDays: number;
     graceDays: number;
+    /** Hours added past a trial's end, so a late conversion webhook doesn't stop a paying user's writes. */
+    trialGraceHours: number;
     /** Display text for the price, for example "$3 / month". Optional. */
     priceLabel: string | null;
   };
@@ -80,13 +85,14 @@ export function loadHostedConfig(env: NodeJS.ProcessEnv = process.env): HostedCo
       secretKey,
       webhookSecret: required(env, "STRIPE_WEBHOOK_SECRET"),
       priceId: required(env, "STRIPE_PRICE_ID"),
-      portalUrl: env.STRIPE_PORTAL_URL || null,
+      portalUrl: required(env, "STRIPE_PORTAL_URL"),
       apiBase: env.STRIPE_API_BASE || "https://api.stripe.com",
     },
     plan: {
       maxMachines: integer(env, "PLAN_MAX_MACHINES", server.maxMachines, 1),
       trialDays: integer(env, "TRIAL_DAYS", 14, 1),
       graceDays: integer(env, "RENEWAL_GRACE_DAYS", 3, 0),
+      trialGraceHours: integer(env, "TRIAL_GRACE_HOURS", 24, 0),
       priceLabel: env.PLAN_PRICE || null,
     },
   };
